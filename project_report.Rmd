@@ -1,0 +1,185 @@
+---
+title: "Practical Machine Learning: Prediction Model Assignment Write-up"
+author: "Marcelo Rondelli Brito"
+date: "27 de december de 2015"
+output: html_document
+---
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict the manner in which they did the exercise.
+
+
+#Data
+
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment.
+
+##Getting and loading the data
+
+```{r}
+set.seed(12345)
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+trainingRaw <- read.csv(url(trainUrl), na.strings=c("NA","#DIV/0!",""))
+testingRaw <- read.csv(url(testUrl), na.strings=c("NA","#DIV/0!",""))
+```
+
+##Exploring the Data Set
+
+```{r}
+dim(trainingRaw)
+dim(testingRaw)
+```
+
+We take a quick look at the data and specially at classe... 
+
+```{r}
+str(trainingRaw, list.len=20)
+table(trainingRaw$classe)
+prop.table(table(trainingRaw$classe))
+```
+
+
+The training data set contains 19622 observations and 160 variables, while the testing data set contains 20 observations and 160 variables. The "classe" variable in the training set is the outcome to predict.
+
+##Cleaning the data
+
+As we could see above, let's do some basic clean-up removing the six first columns, which there are only for information and reference purposes.
+
+```{r}
+training <- trainingRaw[, 7:160]
+testing  <- testingRaw[, 7:160]
+```
+
+Now, remove columns that contain NA missing values.
+
+```{r}
+training <- training[, colSums(is.na(training)) == 0]
+testing <- testing[, colSums(is.na(testing)) == 0]
+```
+
+Finally, remove NearZeroVariance variables if it still exists.
+
+```{r}
+library(caret)
+nzv <- nearZeroVar(training, saveMetrics=TRUE)
+training <- training[,nzv$nzv==FALSE]
+
+nzv <- nearZeroVar(testing, saveMetrics=TRUE)
+testing <- testing[,nzv$nzv==FALSE]
+```
+
+##Validate Data Set
+
+```{r}
+inTraining  <- createDataPartition(y=training$classe,p=0.60,list=FALSE)
+train1 <- training[inTraining,]
+valid1 <- training[-inTraining,]
+dim(train1)
+dim(valid1)
+```
+
+##Data Manipulation
+
+In our data exist a lot of variables, this way, it's important understand the relative importance for each one covarietes. For this work, we will use the Random Forcast Algorithm and plotting the results using varImpPlot():
+
+
+```{r}
+library(randomForest)
+fitModelRForcast <- randomForest(classe~., data=train1, importance=TRUE, ntree=50)
+varImpPlot(fitModelRForcast)
+````
+
+Using the Accuracy and Gini graphs above, we select the top **13** variables that we'll use for model building. If the accuracy of the resulting model is acceptable, limiting the number of variables is a good idea to ensure readability and interpretability of the model.
+
+```{r}
+varImpPlot(x=fitModelRForcast,n.var=13)
+````
+
+In order to identify and eliminate variables with high correlations among then, the following code calculates the correlation matrix, replaces the 1s in the diagonal with 0s, and outputs which variables have an absolute value correlation above 80%:
+
+```{r}
+correl = cor(train1[,c("magnet_dumbbell_z",
+                       "yaw_belt",
+                       "roll_belt",
+                       "num_window",
+                       "pitch_forearm",
+                       "gyros_forearm_y",
+                       "pitch_belt",
+                       "magnet_dumbbell_y",
+                       "accel_dumbbell_y",
+                       "gyros_arm_y",
+                       "gyros_dumbbell_z",
+                       "accel_forearm_z",
+                       "roll_arm")])
+diag(correl) <- 0
+which(abs(correl)>0.80, arr.ind=TRUE)
+````
+
+To select one of them, we performed tree classifier in order to analyse which one has a higher degree of importance.
+
+```{r}
+library(rpart)
+library(rpart.plot)
+fitModelTree <- rpart(classe~., data=train1, method="class")
+prp(fitModelTree)
+````
+
+In this model, the variable **roll_belt** showed a high degree of relevance, for this reason the *yaw_belt* will be eliminate of our model.
+
+##Prediction Model Set
+
+Now, we are prepared to perform the perdictions using the 12 most important variables of the data.
+
+```{r}
+fitModel <- train(classe~magnet_dumbbell_z+roll_belt+num_window+pitch_forearm+pitch_forearm+gyros_forearm_y+pitch_belt+magnet_dumbbell_y+accel_dumbbell_y+gyros_arm_y+gyros_dumbbell_z+accel_forearm_z+roll_arm,
+                  data=train1,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+````
+
+Bellow, we examined how accurate is our model on the valid/test data set.
+
+```{r}
+predictions <- predict(fitModel, newdata=valid1)
+confusionMat <- confusionMatrix(predictions, valid1$classe)
+accuracy <- postResample(predictions, valid1$classe)
+accuracy
+oose <- 1 - as.numeric(confusionMatrix(valid1$classe, predictions)$overall[1])
+oose
+````
+
+Great results! The estimated accuracy of the model is **99.75%** and the estimated out-of-sample error is **0.25%**.
+
+##Predicting Results on the Test Data
+
+Now, we apply the model to the original testing data set downloaded from the data source.
+
+```{r}
+result <- predict(fitModel, testing[, -length(names(testing))])
+result
+````
+
+
+```{r}
+# Write the results to a text file for submission
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+# pml_write_files(result)
+````
